@@ -1,0 +1,486 @@
+---
+title: "P&S Assignment v1"
+author: "B219359"
+date: "2024-03-08"
+output:
+  word_document:
+  reference_docx: word-style.docx 
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+
+```{r install, include=FALSE, results='hide'}
+#install.packages("readxl")
+```
+# Load Libraries
+```{r load, include=TRUE, results='hide'}
+library("readxl")
+library("skimr")
+library("tidyverse")
+library(dplyr)
+library(ggplot2)
+library(knitr)
+
+```
+
+# Data loading, preprocessing and exploratory analysis
+
+## Load data
+Read data from excel files
+```{r read, include=TRUE}
+data_bm <- read_excel("biomarkers.xlsx")
+data_covariates <- read_excel("covariates.xlsx")
+```
+
+
+
+```{r, include=TRUE}
+#Use skimr package to have a look at data
+skimr::skim(data_bm)
+```
+Check for missing data  and non numeric columns in biomarkers
+```{r}
+skim_summary<-data.frame(skimr::skim(data_bm))
+# Columns with missing values:
+length(skim_summary[skim_summary$n_missing!=0,]$skim_variable)
+# Non numeric columns:
+skim_summary[skim_summary$skim_type!="numeric",]$skim_variable
+```
+
+
+```{r, include=TRUE}
+skimr::skim(data_covariates)
+```
+
+Check for missing data  and non numeric columns in biomarkers
+```{r, results='hide'}
+#use skimr to get summary data
+skim_summary<-data.frame(skimr::skim(data_covariates))
+# Columns with missing values:
+skim_summary[skim_summary$n_missing!=0,]$skim_variable
+# number of missing values
+skim_summary[skim_summary$n_missing!=0,]$n_missing
+# Number non numeric columns:
+length(skim_summary[skim_summary$skim_type!="numeric",]$skim_variable)
+```
+Note Vas-12months is incomplete in covariates
+
+
+## Data preparation
+
+In biomarkers split biomarker column to get patient id and time period
+
+```{r split biomarker, include=TRUE}
+
+data_bm<-data_bm%>%separate(Biomarker,into=c("PatientID","TimePeriod"), sep="-")
+data_bm<-transform(data_bm, PatientID = as.numeric(PatientID))
+```
+
+Now join the two datasets together, using the PatientId Column
+
+```{r merge data, include=TRUE, results='hide'}
+all_data  <- merge(data_bm, data_covariates, by="PatientID")
+```
+Tidy the data a bit - rename some columns.
+```{r rename, include=TRUE}
+
+all_data<-all_data %>% 
+  rename(
+    Sex = `Sex (1=male, 2=female)`,
+    Smoker = `Smoker (1=yes, 2=no)`
+    )
+
+```
+
+
+## Data exploration
+conduct some sanity checks to understand what is missing
+
+a) Are all patients in both datasets?
+```{r}
+length(data_bm$PatientID[!(data_bm$PatientID%in%data_covariates$PatientID)])
+length(data_covariates$PatientID[!(data_covariates$PatientID%in%data_bm$PatientID)])
+```
+ans. yes the exact same patients are referred to in both
+
+b) which patients don't have the full set of biomarkers? The full set is 3 - 0weeks, 6weeks and 12months.
+
+```{r}
+missing_bm_patients<-data_bm%>%group_by(PatientID) %>% 
+  summarize(count_records = n())%>%filter(count_records!=3)
+missing_bm_patients
+```
+Now looking at what biomarker data we have for these patients
+```{r}
+
+select(data_bm%>%filter(PatientID %in% missing_bm_patients$PatientID),PatientID, TimePeriod)
+
+```
+We can see it is not always the 12 months missing. For example patientid 40, has 6weeks and 12months and is missing 0weeks.
+
+Now lets check who is missing data in covariance, recalling it is VAS-12months missing data
+
+```{r}
+covariates_missing<-data_covariates[is.na(data_covariates$`Vas-12months`),"PatientID"]
+covariates_missing
+```
+So the missing data from each table is for different patients
+
+
+# Assignment Questions
+
+## Question 1
+
+Get data at inclusion, from the joined data set. 
+```{r}
+#get data at inclusion
+inclusion_data<-all_data%>%filter(all_data$TimePeriod=="0weeks")
+
+```
+
+### Q1a) Going to look at difference in biomarkers at inclusion by Sex
+
+First seperate out male and female data and obtain a list of biomarkers
+```{r}
+#remove unnecessary columns don't want know patient id, and timeperiod is irrelevant as all at inclusion
+
+inclusion_data<-inclusion_data[,!names(inclusion_data) %in% 
+       c("PatientID", "TimePeriod")]
+
+#create seperate data sets for each sex
+inclusion_male_data<-inclusion_data%>%filter(inclusion_data$Sex==1)
+inclusion_female_data<-inclusion_data%>%filter(inclusion_data$Sex==2)
+
+#the biomarkers are columns in the biomarker file, except the first two which are patient id and time period
+list_biomarkers<- colnames(data_bm)[-(c(1,2))]
+```
+
+Create a box plot for each biomarker, split by Sex  
+```{r, results='asis', fig.dim=c(6,3)}
+
+#select just the relevant columns from the data at inclusion - sex and biomarkers
+relevant_data<-inclusion_data[append(c("Sex"),list_biomarkers)]
+
+#transform this data to create a box plot
+relevant_data$Sex<-replace(relevant_data$Sex,relevant_data$Sex==1, "Male")
+relevant_data$Sex<-replace(relevant_data$Sex,relevant_data$Sex==2, "Female")
+relevant_data_transformed<-relevant_data%>%  gather(key = "biomarker", value = "result", list_biomarkers)
+
+#plot
+ggplot(relevant_data_transformed, aes(x=biomarker, y=result, fill=as.factor(Sex))) + 
+    geom_boxplot()+ guides(fill=guide_legend(title="Sex")) + theme(axis.text.x = element_text(angle = 90)) 
+```
+  
+### Q1c)  For each biomarker conduct a t test as to whether make and female data is different
+```{r,results='asis'}
+results= data.frame(matrix(ncol = 0, nrow = length(list_biomarkers)) )
+i=1
+for (biomarker in list_biomarkers )
+{
+  results$biomarker[i]<-biomarker
+  results$two.sided_pvalue[i]<-t.test(inclusion_male_data[biomarker],inclusion_female_data[biomarker],alternative="two.sided", var.equal=TRUE )$p.value
+  i=i+1
+}
+
+results$conclusion_90<-with(results, ifelse(two.sided_pvalue>0.1, "Do not reject", "Reject"))
+results$conclusion_95<-with(results, ifelse(two.sided_pvalue>0.05, "Do not reject", "Reject"))
+
+#round the numeric columns and use "kable" to create a table in the knitted output
+kable(results %>% mutate(across(where(is.numeric), round, digits=4)))
+```
+
+
+
+### Q1di
+```{r}
+print("probability type I error at 95% CI")
+1-(1-0.05)^9
+print("probability type I error at 90% CI")
+1-(1-0.1)^9
+```
+
+
+### Q1dii
+```{r, include=FALSE}
+# manual check that the adjust method works as expected
+results$two.sided_pvalue*length(list_biomarkers)
+p.adjust(results$two.sided_pvalue, method = "bonferroni")
+
+```
+An alternative method to that in the report is use the same significance levels and use an R function to adjust the pvalue.  This is used to confirm reject/reject status but adjusted p values are not in the report.
+```{r, results='asis'}
+
+results$adj.two.sided_pvalue= p.adjust(results$two.sided_pvalue, method = "bonferroni") 
+
+results$adj_conclusion_90<-with(results, ifelse(adj.two.sided_pvalue>0.1, "Do not reject", "Reject"))
+results$adj_conclusion_95<-with(results, ifelse(adj.two.sided_pvalue>0.05, "Do not reject", "Reject"))
+kable(results %>% mutate(across(where(is.numeric), round, digits=4)))
+
+```
+Look at whether there is evidence of correlation between the biomarkers at inclusion
+```{r}
+#use kable to make a tidier knitted output
+kable(round(cor(inclusion_data%>%select(list_biomarkers)),2))
+```
+
+
+
+## Question 2
+### Q2a
+
+Remove data with missing values, and create a 80:20 train test split.
+Examine training data to see if explanatory variables are independent.
+```{r}
+
+
+
+#https://www.statology.org/train-test-split-r/
+#https://stackoverflow.com/questions/28770718/how-do-you-build-a-linear-model-not-knowing-the-column-names-in-data-frame
+#https://stackoverflow.com/questions/22286419/move-a-column-to-first-position-in-a-data-frame
+#https://www.southampton.ac.uk/passs/confidence_in_the_police/multivariate_analysis/linear_regression.page
+
+# Data Cleaning
+#drop where there is missing data
+# observed earlier two NAs in VAS_12months, otherwise data was complete
+inclusion_data_clean<-na.omit(inclusion_data)
+
+model_inclusion_Data <- inclusion_data_clean %>%
+  select("Vas-12months", everything())
+
+#No need to hard code the linear model.  There is a function that derives it.  Print it out to confirm correct
+formula(model_inclusion_Data)
+
+
+#make this data test train split reproducible
+set.seed(1000)
+
+#use 80% of dataset as training set and 20% as test set
+sample <- sample(c(TRUE, FALSE), nrow(model_inclusion_Data), replace=TRUE, prob=c(0.8,0.2))
+
+train  <- model_inclusion_Data[sample, ]
+test   <- model_inclusion_Data[!sample, ]
+
+
+
+```
+
+```{r, results='asis'}
+
+
+#Print the patient Ids for simple reproduction
+#Note PAtientID has been dropped from this data set - revisit full set 
+#Note square brackets in output indicate row number, not a patientID - ignore these!
+#Training data
+(all_data%>%filter(all_data$TimePeriod=="0weeks"))[sample,"PatientID" ]
+#Test data
+(all_data%>%filter(all_data$TimePeriod=="0weeks"))[!sample,"PatientID" ]
+
+#Fit the model
+model<-lm(formula(model_inclusion_Data), data=train)
+
+#output the coefficients
+kable(round(data.frame(model$coefficients),4))
+
+# note to look at more details of coefficients use
+kable(data.frame(summary(model)$coefficients)%>% mutate(across(where(is.numeric), round, digits=4)))
+```
+
+
+
+### Q2b
+
+To examine the fit of the model to the training data, compare predicted values to actual, and residuals
+
+```{r, results='asis', fig.dim=c(2,2)}
+
+# Calculate predictions and 90% prediction intervals 
+train_predictions<- data.frame(predict(model, interval ="prediction", newdata = train,level=.90 ))
+
+#add actual values to table
+train_predictions$actual<-train$`Vas-12months`
+
+
+#obtain residuals
+train_predictions$residual<-model$residuals
+
+#create plots
+
+plot1<-ggplot(train_predictions, aes(x=fit, y=actual))+ geom_point()+xlab("Predicted values")+ylab("Actual values")+ geom_abline(slope=1, intercept=0, aes(colour='red'))+
+  xlim(-1,10)+ylim(-1,10)+
+  theme(
+    axis.title.x = element_text(size = 9),
+    axis.title.y = element_text(size = 9)
+  )#+ggtitle("Predicted vs actual 12 month VAS levels for training data")
+plot1
+plot2<-ggplot(train_predictions, aes(x=fit, y=residual))+ geom_point()+xlab("Predicted values")+ylab("Residual values")+ 
+  theme(
+    axis.title.x = element_text(size = 9),
+    axis.title.y = element_text(size = 9)
+  )#+ggtitle("Predicted values vs residuals of 12 month VAS levels for training data")
+plot2
+plot3<- ggplot(train_predictions, aes(x=residual))+geom_histogram(binwidth = 0.5)+xlab("Residual")+ylab("Frequency")+ 
+  theme(
+    axis.title.x = element_text(size = 9),
+    axis.title.y = element_text(size = 9)
+  )#+ggtitle("Residuals of 12 month VAS levels for training data")
+plot3
+```
+Calculate R^2
+
+```{r}
+cor(train_predictions$fit, train_predictions$actual)^2
+```
+Calculate adjusted R^2
+```{r}
+adj.r2 <- function(r2,n,k){
+  
+  1-((1-r2)*(n-1)/(n-k-1))
+}
+#check this works - can compare to r summary statistic
+# n is the number of data points (so rows) in training data set
+#k is number of exploratory variables, so number of columns -1
+adj.r2(cor(train_predictions$fit, train_predictions$actual)^2,nrow(train),ncol(train)-1)
+
+```
+
+Alternatively use summary stats to obtain r squared and adjusted r squared
+```{r, include=TRUE}
+summary(model)
+```
+To compare fit of model to test data, look at mean of absolute values of residuals (MAE) and mean of square of residuals (MSE)
+```{r}
+#MSE
+sum(train_predictions$residual^2)/length(train_predictions$residual)
+#MAE
+sum(abs(train_predictions$residual))/length(train_predictions$residual)
+```
+
+
+
+### Q2c
+Create predictions and plot residuals
+```{r, results='asis', fig.dim=c(2,2)}
+
+test_predictions<- data.frame(predict(model, interval ="prediction", newdata = test,level=.90 ))
+test_predictions$actual<-test$`Vas-12months`
+
+# The viable range for VAS is 0 to 10 - check what percentage of this range each of the predictions cover
+# and if the prediction interval includes the actual value
+for(i in 1:length(test_predictions$fit))
+{
+  test_predictions$range_coverage[i]<- (min(test_predictions$upr[i],10)-  max(test_predictions$lwr[i],0))*100/10
+  test_predictions$actual_in_pr<-ifelse(((test_predictions$actual<=test_predictions$upr)&(test_predictions$actual>=test_predictions$lwr)),"YES", "NO")
+}
+
+#output a table
+kable(test_predictions%>% mutate(across(where(is.numeric), round, digits=2)))
+
+#calculate the residual
+test_predictions$residual<-test_predictions$actual-test_predictions$fit
+
+#create graphs
+plot1<-ggplot(test_predictions, aes(x=fit, y=actual))+ geom_point()+xlab("Predicted values")+ylab("Actual values")+ geom_abline(slope=1, intercept=0, aes(colour='red'))+
+  xlim(-1,10)+ylim(-1,10)+
+  theme(
+    axis.title.x = element_text(size = 9),
+    axis.title.y = element_text(size = 9)
+  )#+ggtitle("Predicted vs actual 12 month VAS levels for test data")
+plot1
+plot2<-ggplot(test_predictions, aes(x=fit, y=residual))+ geom_point()+xlab("Predicted values")+ylab("Residual values")+ 
+  theme(
+    axis.title.x = element_text(size = 9),
+    axis.title.y = element_text(size = 9)
+  )#+ggtitle("Predicted values vs residuals of 12 month VAS levels for test data")
+plot2
+plot3<- ggplot(test_predictions, aes(x=residual))+geom_histogram(binwidth = 0.5)+xlab("Residual")+ylab("Frequency")+ 
+  theme(
+    axis.title.x = element_text(size = 9),
+    axis.title.y = element_text(size = 9)
+  ) #+ggtitle("Residuals of 12 month VAS levels for test data")
+plot3
+```
+```{r}
+#MSE
+sum(test_predictions$residual^2)/length(test_predictions$residual)
+#MAE
+sum(abs(test_predictions$residual))/length(test_predictions$residual)
+```
+
+
+Repeat with a different random seed (i.e. different test train split)
+This is a better bad fit (adj R^2 higher). 
+
+```{r}
+#make this data test train split reproducible
+set.seed(1)
+
+#use 80% of dataset as training set and 20% as test set
+sample2 <- sample(c(TRUE, FALSE), nrow(model_inclusion_Data), replace=TRUE, prob=c(0.8,0.2))
+
+train2  <- model_inclusion_Data[sample2, ]
+test2   <- model_inclusion_Data[!sample2, ]
+#Fit the model
+model2<-lm(formula(model_inclusion_Data), data=train2)
+
+# note to look at more details of coefficients use
+kable(data.frame(summary(model2)$coefficients)%>% mutate(across(where(is.numeric), round, digits=4)))
+
+
+# Calculate predictions and 90% prediction intervals 
+train_predictions2<- data.frame(predict(model2, interval ="prediction", newdata = train2,level=.90 ))
+
+#add actual values to table
+train_predictions2$actual<-train2$`Vas-12months`
+
+
+#obtain residuals
+train_predictions2$residual<-model2$residuals
+
+#create plots
+
+plot1<-ggplot(train_predictions2, aes(x=fit, y=actual))+ geom_point()+xlab("Predicted values")+ylab("Actual values")+ geom_abline(slope=1, intercept=0, aes(colour='red'))+
+  xlim(-1,10)+ylim(-1,10)+
+  theme(
+    axis.title.x = element_text(size = 9),
+    axis.title.y = element_text(size = 9)
+  )#+ggtitle("Predicted vs actual 12 month VAS levels for training data")
+plot1
+plot2<-ggplot(train_predictions2, aes(x=fit, y=residual))+ geom_point()+xlab("Predicted values")+ylab("Residual values")+ 
+  theme(
+    axis.title.x = element_text(size = 9),
+    axis.title.y = element_text(size = 9)
+  )#+ggtitle("Predicted values vs residuals of 12 month VAS levels for training data")
+plot2
+plot3<- ggplot(train_predictions2, aes(x=residual))+geom_histogram(binwidth = 0.5)+xlab("Residual")+ylab("Frequency")+ 
+  theme(
+    axis.title.x = element_text(size = 9),
+    axis.title.y = element_text(size = 9)
+  )#+ggtitle("Residuals of 12 month VAS levels for training data")
+plot3
+
+#R^2
+cor(train_predictions2$fit, train_predictions2$actual)^2
+
+#Adjusted R^2
+adj.r2(cor(train_predictions2$fit, train_predictions2$actual)^2,nrow(train2),ncol(train2)-1)
+
+#MSE
+sum(train_predictions2$residual^2)/length(train_predictions2$residual)
+#MAE
+sum(abs(train_predictions2$residual))/length(train_predictions2$residual)
+```
+
+
+# Information about versions
+
+```{r, include=TRUE}
+sessionInfo() 
+```
+
+
+
+
